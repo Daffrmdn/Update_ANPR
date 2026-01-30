@@ -24,6 +24,9 @@ IS_RASPBERRY_PI = IS_LINUX and os.path.exists('/proc/device-tree/model')
 FACES_DATABASE = "faces_database"
 EMBEDDINGS_FILE = "face_embeddings.pkl"
 
+# Camera config
+CAMERA_DEVICE = "/dev/video0" if IS_LINUX else 0  # Auto-select based on OS
+
 # Debug mode
 DEBUG_MODE = True  # Set False untuk production
 HEADLESS_MODE = os.environ.get('DISPLAY') is None if IS_LINUX else False
@@ -299,17 +302,18 @@ class FaceRecognizer:
         print("-" * 50)
         
         debug_log("Initializing camera for face recognition", "CAMERA")
+        debug_log(f"Using camera device: {CAMERA_DEVICE}", "DEBUG")
         
         # Buka webcam dengan backend yang sesuai untuk OS
         if IS_WINDOWS:
             debug_log("Using DirectShow backend", "DEBUG")
-            cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
+            cap = cv2.VideoCapture(CAMERA_DEVICE, cv2.CAP_DSHOW) if isinstance(CAMERA_DEVICE, int) else cv2.VideoCapture(CAMERA_DEVICE)
         elif IS_LINUX:
             debug_log("Using V4L2 backend", "DEBUG")
-            cap = cv2.VideoCapture(0, cv2.CAP_V4L2)
+            cap = cv2.VideoCapture(CAMERA_DEVICE, cv2.CAP_V4L2) if isinstance(CAMERA_DEVICE, int) else cv2.VideoCapture(CAMERA_DEVICE, cv2.CAP_V4L2)
         else:
             debug_log("Using default backend", "DEBUG")
-            cap = cv2.VideoCapture(0)
+            cap = cv2.VideoCapture(CAMERA_DEVICE)
         
         if not cap.isOpened():
             print("❌ Cannot open webcam!")
@@ -477,13 +481,19 @@ class FaceRecognizer:
         print("  Press 'V' to verify (capture & check)")
         print("=" * 50)
         
+        debug_log("Initializing camera for face verification", "CAMERA")
+        debug_log(f"Using camera device: {CAMERA_DEVICE}", "DEBUG")
+        
         # Buka webcam dengan backend yang sesuai untuk OS
         if IS_WINDOWS:
-            cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
+            debug_log("Using DirectShow backend", "DEBUG")
+            cap = cv2.VideoCapture(CAMERA_DEVICE, cv2.CAP_DSHOW) if isinstance(CAMERA_DEVICE, int) else cv2.VideoCapture(CAMERA_DEVICE)
         elif IS_LINUX:
-            cap = cv2.VideoCapture(0, cv2.CAP_V4L2)
+            debug_log("Using V4L2 backend", "DEBUG")
+            cap = cv2.VideoCapture(CAMERA_DEVICE, cv2.CAP_V4L2) if isinstance(CAMERA_DEVICE, int) else cv2.VideoCapture(CAMERA_DEVICE, cv2.CAP_V4L2)
         else:
-            cap = cv2.VideoCapture(0)
+            debug_log("Using default backend", "DEBUG")
+            cap = cv2.VideoCapture(CAMERA_DEVICE)
         
         if not cap.isOpened():
             print("❌ Cannot open webcam!")
