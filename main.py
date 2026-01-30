@@ -38,6 +38,13 @@ PLATES_FOLDER = "detected_plates"
 CONFIDENCE_THRESHOLD = 0.5
 CAPTURE_DELAY = 2  # Delay 3 detik setelah deteksi plat sebelum capture
 
+# --- CAMERA CONFIG ---
+# Pilih salah satu:
+# - 0, 1, 2, ... (index) untuk auto-detect
+# - "/dev/video0", "/dev/video1", ... (path) untuk device spesifik di Linux
+# Gunakan device path jika ada multiple camera atau auto-detect bermasalah
+CAMERA_DEVICE = "/dev/video0" if IS_LINUX else 0  # Auto-select based on OS
+
 # --- DEBUG & TESTING ---
 DEBUG_MODE = True  # Set False untuk production (mengurangi output log)
 CAMERA_TEST_MODE = True  # Test kamera saat startup
@@ -99,25 +106,25 @@ def debug_log(message, level="INFO"):
     timestamp = datetime.now().strftime("%H:%M:%S")
     print(f"[{timestamp}] {icon} {message}")
 
-def test_camera(camera_index=0):
+def test_camera(camera_device):
     """Test kamera dan return status"""
     print("\n" + "=" * 50)
     print("  CAMERA CONNECTIVITY TEST")
     print("=" * 50)
     
     try:
-        print(f"📷 Testing camera {camera_index}...")
+        print(f"📷 Testing camera {camera_device}...")
         
         # Try opening camera with appropriate backend
         if IS_WINDOWS:
             debug_log("Using DirectShow backend (Windows)", "DEBUG")
-            cap = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)
+            cap = cv2.VideoCapture(camera_device, cv2.CAP_DSHOW) if isinstance(camera_device, int) else cv2.VideoCapture(camera_device)
         elif IS_LINUX:
             debug_log("Using V4L2 backend (Linux)", "DEBUG")
-            cap = cv2.VideoCapture(camera_index, cv2.CAP_V4L2)
+            cap = cv2.VideoCapture(camera_device, cv2.CAP_V4L2) if isinstance(camera_device, int) else cv2.VideoCapture(camera_device, cv2.CAP_V4L2)
         else:
             debug_log("Using default backend", "DEBUG")
-            cap = cv2.VideoCapture(camera_index)
+            cap = cv2.VideoCapture(camera_device)
         
         if not cap.isOpened():
             print("❌ FAILED: Camera cannot be opened")
@@ -330,17 +337,18 @@ def detect_license_plates_realtime(model, confidence=0.5):
     print("=" * 50)
     
     debug_log("Initializing camera for plate detection", "CAMERA")
+    debug_log(f"Using camera device: {CAMERA_DEVICE}", "DEBUG")
     
     # Buka webcam dengan backend yang sesuai untuk OS
     if IS_WINDOWS:
         debug_log("Using DirectShow backend", "DEBUG")
-        cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
+        cap = cv2.VideoCapture(CAMERA_DEVICE, cv2.CAP_DSHOW) if isinstance(CAMERA_DEVICE, int) else cv2.VideoCapture(CAMERA_DEVICE)
     elif IS_LINUX:
         debug_log("Using V4L2 backend", "DEBUG")
-        cap = cv2.VideoCapture(0, cv2.CAP_V4L2)
+        cap = cv2.VideoCapture(CAMERA_DEVICE, cv2.CAP_V4L2) if isinstance(CAMERA_DEVICE, int) else cv2.VideoCapture(CAMERA_DEVICE, cv2.CAP_V4L2)
     else:
         debug_log("Using default backend", "DEBUG")
-        cap = cv2.VideoCapture(0)
+        cap = cv2.VideoCapture(CAMERA_DEVICE)
     
     if not cap.isOpened():
         print("❌ Cannot open webcam!")
@@ -572,7 +580,7 @@ if __name__ == "__main__":
     try:
         # Test camera connectivity if enabled
         if CAMERA_TEST_MODE:
-            camera_ok = test_camera(0)
+            camera_ok = test_camera(CAMERA_DEVICE)
             if not camera_ok:
                 print("\n⚠️ Camera test failed. Continue anyway? (y/n): ", end="")
                 response = input().lower()
@@ -582,6 +590,7 @@ if __name__ == "__main__":
         
         debug_log(f"Debug mode: {'ENABLED' if DEBUG_MODE else 'DISABLED'}", "INFO")
         debug_log(f"Headless mode: {'ENABLED' if HEADLESS_MODE else 'DISABLED'}", "INFO")
+        debug_log(f"Camera device: {CAMERA_DEVICE}", "INFO")
         
         print("\n🔄 Loading YOLO model...")
         model = load_model(MODEL_PATH)
