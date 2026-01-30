@@ -703,26 +703,56 @@ if __name__ == "__main__":
             print("  STARTING PLATE DETECTION...")
             print("#" * 50)
             
-            detected_plate = detect_license_plates_realtime(model, CONFIDENCE_THRESHOLD)
+            # Tampilkan di LCD
+            if rasp_controller:
+                rasp_controller.display_status("SCANNING...", "Show your plate")
             
-            if detected_plate is None:
-                print("\n⚠️ No plate detected. Restarting...")
-                time.sleep(2)
-                continue
+            # Loop hingga plat terdaftar di database
+            detected_plate = None
+            owner = []  # List of owners
+            
+            while not owner:  # Loop terus sampai ada owner yang terdaftar
+                detected_plate = detect_license_plates_realtime(model, CONFIDENCE_THRESHOLD)
+                
+                if detected_plate is None:
+                    print("\n⚠️ No plate detected. Restarting detection...")
+                    if rasp_controller:
+                        rasp_controller.display_status("NO PLATE", "Try again...")
+                    time.sleep(2)
+                    continue
+                
+                # Cek pemilik plat dari database
+                print(f"\n🔍 Checking plate: {detected_plate}")
+                owner = db.get_person_by_plate(detected_plate)
+                
+                if not owner:  # Jika list kosong (tidak ada owner)
+                    print(f"  ❌ Plat '{detected_plate}' TIDAK TERDAFTAR dalam database!")
+                    print(f"  🔄 Mengulangi deteksi plat...")
+                    print(f"  📝 Silakan scan plat yang terdaftar di sistem")
+                    if rasp_controller:
+                        rasp_controller.display_status("NOT REGISTERED", detected_plate)
+                    time.sleep(3)
+                    # Continue loop - akan detect lagi
+                else:
+                    print(f"  ✅ Plat terdaftar!")
+                    print(f"  👤 Pemilik: {', '.join(owner)}")
+                    if rasp_controller:
+                        rasp_controller.display_status("PLATE OK", detected_plate)
+                    time.sleep(1)
+                    break
             
             # ===== STEP 2: FACE VERIFICATION =====
             print("\n" + "=" * 50)
             print("  PLATE DETECTED - STARTING FACE VERIFICATION")
             print("=" * 50)
             print(f"  Plat terdeteksi: {detected_plate}")
-            
-            # Cek pemilik plat dari database
-            owner = db.get_person_by_plate(detected_plate)
-            if owner:
-                print(f"  Pemilik terdaftar: {owner}")
-            else:
-                print(f"  ⚠️ Plat tidak terdaftar dalam database!")
+            print(f"  Pemilik terdaftar: {owner}")
             print("=" * 50)
+            
+            # Tampilkan di LCD
+            if rasp_controller:
+                owner_name = owner[0] if owner else "Unknown"
+                rasp_controller.display_status("VERIFY FACE", owner_name[:16])
             
             # Delay sebentar sebelum memulai face recognition
             print("\n⏳ Preparing face recognition...")
@@ -773,6 +803,8 @@ if __name__ == "__main__":
             print("\n" + "=" * 50)
             print("  RETURNING TO PLATE DETECTION...")
             print("=" * 50)
+            if rasp_controller:
+                rasp_controller.display_status("READY", "Waiting...")
             time.sleep(2)
             
     except KeyboardInterrupt:
