@@ -28,28 +28,41 @@ EMBEDDINGS_FILE = "face_embeddings.pkl"
 CAMERA_DEVICE = "/dev/video0" if IS_LINUX else 0  # Auto-select based on OS
 
 # Debug mode
-DEBUG_MODE = True  # Set False untuk production
+DEBUG_MODE = False  # Set False untuk production
 HEADLESS_MODE = os.environ.get('DISPLAY') is None if IS_LINUX else False
 
 # ============ OPTIMASI FPS ============
+# Performance mode untuk Raspberry Pi
+PERFORMANCE_MODE = "LOW" if IS_RASPBERRY_PI else "BALANCED"
+
 # Pilih model (dari tercepat ke paling akurat):
 # - "SFace" : Tercepat, akurasi cukup
 # - "Facenet" : Cepat, akurasi bagus (RECOMMENDED - balance)
 # - "Facenet512" : Lebih lambat, akurasi tinggi (BEST ACCURACY)
 # - "ArcFace" : Lambat, akurasi sangat tinggi
 # PENTING: Model HARUS SAMA dengan yang dipakai saat training!
-MODEL_NAME = "Facenet512"  # Gunakan model yang sama dengan training
+# Gunakan model lebih ringan di Raspberry Pi untuk performa
+if PERFORMANCE_MODE == "LOW":
+    MODEL_NAME = "Facenet"  # Lebih cepat untuk Raspberry Pi
+    DETECTOR_BACKEND = "opencv"  # Tercepat
+    PROCESS_SCALE = 0.5
+    SKIP_FRAMES = 3
+elif PERFORMANCE_MODE == "BALANCED":
+    MODEL_NAME = "Facenet512"
+    DETECTOR_BACKEND = "ssd"
+    PROCESS_SCALE = 0.75
+    SKIP_FRAMES = 2
+else:  # HIGH
+    MODEL_NAME = "Facenet512"
+    DETECTOR_BACKEND = "ssd"
+    PROCESS_SCALE = 1.0
+    SKIP_FRAMES = 1
 
 # Detector backend (dari tercepat ke paling akurat):
 # - "opencv" : Tercepat
 # - "ssd" : Cepat, akurasi bagus
 # - "mtcnn" : Akurat tapi lambat
 # - "retinaface" : Paling akurat tapi paling lambat
-DETECTOR_BACKEND = "ssd"  # SSD lebih akurat dari opencv tapi masih cepat
-
-# Frame processing
-PROCESS_SCALE = 0.75  # Resize frame (0.75 = 75% ukuran asli, lebih akurat)
-SKIP_FRAMES = 2  # Proses setiap N frame
 
 THRESHOLD = 0.50  # Threshold similarity (0.50 = balance, naikkan untuk lebih ketat)
 RECOGNITION_LOG = "recognition_log"
@@ -324,17 +337,18 @@ class FaceRecognizer:
         
         debug_log("Camera opened successfully", "SUCCESS")
         
-        # Optimasi webcam settings
-        if IS_RASPBERRY_PI:
-            debug_log("Applying Raspberry Pi optimized settings", "PROCESS")
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-            cap.set(cv2.CAP_PROP_FPS, 15)  # FPS lebih rendah untuk Raspberry Pi
-        else:
-            debug_log("Applying standard camera settings", "PROCESS")
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-            cap.set(cv2.CAP_PROP_FPS, 30)
+        # Optimasi webcam settings berdasarkan performance mode
+        if PERFORMANCE_MODE == "LOW":
+            cam_width, cam_height, cam_fps = 640, 480, 10
+        elif PERFORMANCE_MODE == "BALANCED":
+            cam_width, cam_height, cam_fps = 640, 480, 20
+        else:  # HIGH
+            cam_width, cam_height, cam_fps = 1280, 720, 30
+        
+        debug_log(f"Applying {PERFORMANCE_MODE} performance settings", "PROCESS")
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, cam_width)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, cam_height)
+        cap.set(cv2.CAP_PROP_FPS, cam_fps)
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # Reduce buffer untuk latency rendah
         
         # Verify settings
@@ -501,14 +515,17 @@ class FaceRecognizer:
                 print("   On Linux, ensure user is in 'video' group: sudo usermod -a -G video $USER")
             return "CANCELLED"
         
-        if IS_RASPBERRY_PI:
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-            cap.set(cv2.CAP_PROP_FPS, 15)  # FPS lebih rendah untuk Raspberry Pi
-        else:
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-            cap.set(cv2.CAP_PROP_FPS, 30)
+        # Optimasi webcam settings berdasarkan performance mode
+        if PERFORMANCE_MODE == "LOW":
+            cam_width, cam_height, cam_fps = 640, 480, 10
+        elif PERFORMANCE_MODE == "BALANCED":
+            cam_width, cam_height, cam_fps = 640, 480, 20
+        else:  # HIGH
+            cam_width, cam_height, cam_fps = 1280, 720, 30
+        
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, cam_width)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, cam_height)
+        cap.set(cv2.CAP_PROP_FPS, cam_fps)
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         
         self.is_running = True
