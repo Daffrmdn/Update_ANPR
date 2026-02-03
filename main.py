@@ -758,16 +758,20 @@ if __name__ == "__main__":
             print("\n⏳ Preparing face recognition...")
             time.sleep(1)
             
-            # Face verification dengan max 2 attempts
+            # Face verification dengan max 2 attempts (OTOMATIS)
             attempt = 0
             access_granted = False
+            
+            print("\n🤖 OTOMATIS: Memulai face recognition...")
             
             while attempt < MAX_VERIFICATION_ATTEMPTS and not access_granted:
                 attempt += 1
                 print(f"\n🔄 Verification attempt {attempt}/{MAX_VERIFICATION_ATTEMPTS}")
                 
-                # Mulai face recognition dengan verifikasi plat (webcam baru)
-                result = face_recognizer.start_recognition_with_verification(detected_plate, db, attempt, MAX_VERIFICATION_ATTEMPTS)
+                # Mulai face recognition dengan verifikasi plat (webcam baru) - OTOMATIS
+                result = face_recognizer.start_recognition_with_verification(
+                    detected_plate, db, attempt, MAX_VERIFICATION_ATTEMPTS, auto_mode=True
+                )
                 
                 if result == "GRANTED":
                     access_granted = True
