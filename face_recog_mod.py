@@ -30,6 +30,7 @@ CAMERA_DEVICE = "/dev/video0" if IS_LINUX else 0  # Auto-select based on OS
 # Debug mode
 DEBUG_MODE = False  # Set False untuk production
 HEADLESS_MODE = os.environ.get('DISPLAY') is None if IS_LINUX else False
+AUTO_GRANT_FACE = True  # Set True untuk auto-grant ketika wajah terdeteksi (debugging)
 
 # ============ OPTIMASI FPS ============
 # Performance mode untuk Raspberry Pi
@@ -465,10 +466,18 @@ class FaceRecognizer:
         
         print("✅ Face recognition stopped.")
     
-    def start_recognition_with_verification(self, detected_plate, db, attempt=1, max_attempts=2):
+    def start_recognition_with_verification(self, detected_plate, db, attempt=1, max_attempts=2, auto_mode=False):
         """
         Face recognition dengan verifikasi plat nomor
         Mengecek apakah wajah yang terdeteksi cocok dengan pemilik plat
+        
+        Args:
+            detected_plate: Nomor plat yang terdeteksi
+            db: Database instance
+            attempt: Percobaan ke-berapa
+            max_attempts: Maksimal percobaan
+            auto_mode: Jika True, akan otomatis memverifikasi tanpa tombol 'V'
+        
         Returns: "GRANTED", "DENIED", "CANCELLED", "NO_FACE"
         """
         if not self.deepface_available:
@@ -483,7 +492,8 @@ class FaceRecognizer:
         expected_owner = db.get_person_by_plate(detected_plate)
         
         print("\n" + "=" * 50)
-        print(f"  FACE VERIFICATION MODE (Attempt {attempt}/{max_attempts})")
+        mode_text = "OTOMATIS" if auto_mode else "MANUAL"
+        print(f"  FACE VERIFICATION MODE [{mode_text}] (Attempt {attempt}/{max_attempts})")
         print("=" * 50)
         print(f"  Plat: {detected_plate}")
         if expected_owner:
@@ -491,8 +501,12 @@ class FaceRecognizer:
         else:
             print("  ⚠️ PLAT TIDAK TERDAFTAR - Mode pengawasan")
         print("-" * 50)
-        print("  Press 'Q' to quit/cancel")
-        print("  Press 'V' to verify (capture & check)")
+        if auto_mode:
+            print("  🤖 Mode OTOMATIS - akan verify otomatis saat wajah terdeteksi")
+            print("  Press 'Q' to quit/cancel")
+        else:
+            print("  Press 'Q' to quit/cancel")
+            print("  Press 'V' to verify (capture & check)")
         print("=" * 50)
         
         debug_log("Initializing camera for face verification", "CAMERA")
@@ -530,6 +544,13 @@ class FaceRecognizer:
         
         self.is_running = True
         verification_result = None  # Will be "GRANTED", "DENIED", "CANCELLED", "NO_FACE"
+        
+        # Auto mode variables
+        auto_verify_timer = None
+        auto_verify_delay = 2.0  # Delay 2 detik setelah wajah terdeteksi dalam mode auto
+        stable_face_count = 0  # Counter untuk face yang stabil
+        required_stable_frames = 10  # Butuh 10 frame stabil sebelum auto-verify
+        last_detected_name = None
         
         # Stats
         frame_count = 0
@@ -615,18 +636,71 @@ class FaceRecognizer:
                 
                 cv2.putText(display_frame, status_text, (10, 145),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, status_color, 2)
+                
+                # AUTO MODE LOGIC
+                if auto_mode and results[0]['recognized']:
+                    # Cek apakah wajah yang terdeteksi sama dengan frame sebelumnya (stabilisasi)
+                    if detected_name == last_detected_name:
+                        stable_face_count += 1
+                    else:
+                        stable_face_count = 1
+                        last_detected_name = detected_name
+                        auto_verify_timer = None
+                    
+                    # Jika wajah stabil, mulai countdown
+                    if stable_face_count >= required_stable_frames:
+                        if auto_verify_timer is None:
+                            auto_verify_timer = time.time()
+                            print(f"\n✅ Wajah terdeteksi stabil: {detected_name}")
+                            print(f"⏱️ Memulai countdown {auto_verify_delay} detik untuk auto-verify...")
+                        
+                        elapsed = time.time() - auto_verify_timer
+                        remaining = auto_verify_delay - elapsed
+                        
+                        if remaining > 0:
+                            # Tampilkan countdown
+                            countdown_text = f"AUTO-VERIFY in {remaining:.1f}s"
+                            cv2.putText(display_frame, countdown_text, 
+                                       (display_frame.shape[1]//2 - 150, 50),
+                                       cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 255), 2)
+                        # Countdown logic akan dihandle di bawah setelah display frame
+                else:
+                    # Reset auto-verify timer jika tidak ada wajah atau mode manual
+                    if stable_face_count > 0:
+                        stable_face_count = 0
+                        last_detected_name = None
+                        auto_verify_timer = None
             else:
                 cv2.putText(display_frame, "Face: Scanning...", (10, 120),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+                # Reset auto-verify jika tidak ada wajah terdeteksi
+                stable_face_count = 0
+                last_detected_name = None
+                auto_verify_timer = None
             
             # Instructions
-            cv2.putText(display_frame, "Press V to verify, Q to quit", 
-                       (10, display_frame.shape[0] - 10),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+            if auto_mode:
+                cv2.putText(display_frame, "AUTO MODE - Press Q to quit", 
+                           (10, display_frame.shape[0] - 10),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+            else:
+                cv2.putText(display_frame, "Press V to verify, Q to quit", 
+                           (10, display_frame.shape[0] - 10),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
             
             # Show frame only if not in headless mode
             if not HEADLESS_MODE:
                 cv2.imshow("Face Verification", display_frame)
+            
+            # Check for auto-verify trigger BEFORE waiting for key
+            trigger_verify = False
+            
+            # Auto-verify logic (cek apakah countdown selesai)
+            if auto_mode and auto_verify_timer is not None:
+                elapsed = time.time() - auto_verify_timer
+                if elapsed >= auto_verify_delay:
+                    trigger_verify = True
+                    print(f"\n🤖 AUTO-VERIFY triggered untuk: {last_detected_name}")
             
             key = cv2.waitKey(1) & 0xFF if not HEADLESS_MODE else 0xFF
             
@@ -635,19 +709,35 @@ class FaceRecognizer:
                 verification_result = "CANCELLED"
                 break
             
-            elif key == ord('v'):
-                # Manual verification
+            elif key == ord('v') or trigger_verify:
+                # Manual verification (V) atau Auto-verify trigger
                 if results and results[0]['recognized']:
                     detected_name = results[0]['name']
-                    is_valid, message = db.verify_access(detected_name, detected_plate)
                     
-                    print(f"\n{'=' * 50}")
-                    print(f"  VERIFICATION RESULT")
-                    print(f"{'=' * 50}")
-                    print(f"  Plat: {detected_plate}")
-                    print(f"  Wajah terdeteksi: {detected_name}")
-                    print(f"  {message}")
-                    print(f"{'=' * 50}")
+                    # AUTO GRANT MODE - jika AUTO_GRANT_FACE aktif, auto-grant setiap wajah terdeteksi
+                    if AUTO_GRANT_FACE:
+                        is_valid = True
+                        message = f"🔓 [DEBUG MODE] Auto-granted for detected face: {detected_name}"
+                        
+                        print(f"\n{'=' * 50}")
+                        print(f"  VERIFICATION RESULT (AUTO GRANT MODE)")
+                        print(f"{'=' * 50}")
+                        print(f"  Plat: {detected_plate}")
+                        print(f"  Wajah terdeteksi: {detected_name}")
+                        print(f"  {message}")
+                        print(f"  ⚠️ AUTO_GRANT_FACE is enabled (debugging)")
+                        print(f"{'=' * 50}")
+                    else:
+                        # Normal verification
+                        is_valid, message = db.verify_access(detected_name, detected_plate)
+                        
+                        print(f"\n{'=' * 50}")
+                        print(f"  VERIFICATION RESULT")
+                        print(f"{'=' * 50}")
+                        print(f"  Plat: {detected_plate}")
+                        print(f"  Wajah terdeteksi: {detected_name}")
+                        print(f"  {message}")
+                        print(f"{'=' * 50}")
                     
                     # Log ke database
                     status = "VALID" if is_valid else "DENIED"
@@ -674,22 +764,56 @@ class FaceRecognizer:
                     break
                     
                 else:
-                    print("\n⚠️ Tidak ada wajah yang dikenali. Coba lagi.")
-                    verification_result = "NO_FACE"
-                    
-                    # Show warning on screen
-                    overlay = display_frame.copy()
-                    cv2.rectangle(overlay, (100, 180), (540, 300), (0, 165, 255), -1)
-                    cv2.addWeighted(overlay, 0.7, display_frame, 0.3, 0, display_frame)
-                    cv2.putText(display_frame, "NO FACE DETECTED", (120, 250),
-                               cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 3)
-                    
-                    if not HEADLESS_MODE:
-                        cv2.imshow("Face Verification", display_frame)
-                        cv2.waitKey(1500)
+                    # AUTO GRANT MODE - jika ada wajah apapun terdeteksi (meski unknown), auto-grant
+                    if AUTO_GRANT_FACE and results:
+                        # Ada wajah terdeteksi tapi tidak recognized (Unknown)
+                        detected_name = results[0]['name']  # "Unknown"
+                        
+                        print(f"\n{'=' * 50}")
+                        print(f"  VERIFICATION RESULT (AUTO GRANT MODE)")
+                        print(f"{'=' * 50}")
+                        print(f"  Plat: {detected_plate}")
+                        print(f"  Wajah terdeteksi: {detected_name} (Unknown)")
+                        print(f"  🔓 [DEBUG MODE] Auto-granted for unknown face")
+                        print(f"  ⚠️ AUTO_GRANT_FACE is enabled (debugging)")
+                        print(f"{'=' * 50}")
+                        
+                        # Log ke database
+                        db.log_access(detected_name, detected_plate, "VALID_AUTO_GRANT")
+                        
+                        verification_result = "GRANTED"
+                        
+                        # Show result on screen
+                        overlay = display_frame.copy()
+                        cv2.rectangle(overlay, (100, 180), (540, 300), (0, 255, 0), -1)
+                        cv2.addWeighted(overlay, 0.7, display_frame, 0.3, 0, display_frame)
+                        cv2.putText(display_frame, "ACCESS GRANTED", (140, 250),
+                                   cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 255), 3)
+                        
+                        if not HEADLESS_MODE:
+                            cv2.imshow("Face Verification", display_frame)
+                            cv2.waitKey(2000)
+                        else:
+                            time.sleep(2)
+                        break
                     else:
-                        time.sleep(1.5)  # Wait without display
-                    break
+                        # Mode normal - tidak ada wajah terdeteksi
+                        print("\n⚠️ Tidak ada wajah yang dikenali. Coba lagi.")
+                        verification_result = "NO_FACE"
+                        
+                        # Show warning on screen
+                        overlay = display_frame.copy()
+                        cv2.rectangle(overlay, (100, 180), (540, 300), (0, 165, 255), -1)
+                        cv2.addWeighted(overlay, 0.7, display_frame, 0.3, 0, display_frame)
+                        cv2.putText(display_frame, "NO FACE DETECTED", (120, 250),
+                                   cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 3)
+                        
+                        if not HEADLESS_MODE:
+                            cv2.imshow("Face Verification", display_frame)
+                            cv2.waitKey(1500)
+                        else:
+                            time.sleep(1.5)  # Wait without display
+                        break
         
         cap.release()
         cv2.destroyAllWindows()
