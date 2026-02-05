@@ -15,6 +15,11 @@ import platform
 from queue import Queue
 from collections import deque
 
+# Fix Qt platform plugin warnings for Raspberry Pi
+if platform.system() == 'Linux':
+    os.environ['QT_QPA_PLATFORM'] = 'xcb'  # Use X11 instead of Wayland
+    os.environ['QT_LOGGING_RULES'] = '*.debug=false;qt.qpa.*=false'  # Suppress Qt warnings
+
 # Deteksi sistem operasi
 IS_WINDOWS = platform.system() == 'Windows'
 IS_LINUX = platform.system() == 'Linux'
@@ -87,6 +92,72 @@ def debug_log(message, level="INFO"):
     icon = icons.get(level, "")
     timestamp = datetime.now().strftime("%H:%M:%S")
     print(f"[{timestamp}] {icon} {message}")
+
+def test_camera_readiness(camera_device, backend=None, max_test_frames=5):
+    """Test if camera is ready and can capture frames"""
+    print("\n" + "=" * 50)
+    print("  🔍 TESTING CAMERA READINESS")
+    print("=" * 50)
+    print(f"📷 Camera device: {camera_device}")
+    print(f"🔧 Backend: {backend if backend else 'default'}")
+    print(f"🧪 Test frames: {max_test_frames}")
+    print("=" * 50)
+    
+    cap = None
+    try:
+        # Open camera
+        if backend:
+            cap = cv2.VideoCapture(camera_device, backend)
+        else:
+            cap = cv2.VideoCapture(camera_device)
+        
+        if not cap.isOpened():
+            print("❌ Camera failed to open")
+            return False, None
+        
+        print("✅ Camera opened successfully")
+        
+        # Get camera properties
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        fps = int(cap.get(cv2.CAP_PROP_FPS))
+        
+        print(f"📐 Resolution: {width}x{height}")
+        print(f"🎞️  FPS: {fps}")
+        
+        # Test frame capture
+        print(f"\n🧪 Testing frame capture ({max_test_frames} frames)...")
+        successful_frames = 0
+        
+        for i in range(max_test_frames):
+            ret, frame = cap.read()
+            if ret and frame is not None and frame.size > 0:
+                successful_frames += 1
+                print(f"   Frame {i+1}/{max_test_frames}: ✅ OK ({frame.shape})")
+            else:
+                print(f"   Frame {i+1}/{max_test_frames}: ❌ Failed")
+            time.sleep(0.1)  # Small delay between frames
+        
+        success_rate = (successful_frames / max_test_frames) * 100
+        print(f"\n📊 Success rate: {successful_frames}/{max_test_frames} ({success_rate:.0f}%)")
+        
+        if successful_frames >= max_test_frames * 0.8:  # 80% success rate
+            print("✅ Camera is READY")
+            print("=" * 50)
+            return True, cap
+        else:
+            print("❌ Camera NOT ready (too many failed frames)")
+            print("=" * 50)
+            if cap:
+                cap.release()
+            return False, None
+            
+    except Exception as e:
+        print(f"❌ Camera test error: {e}")
+        print("=" * 50)
+        if cap:
+            cap.release()
+        return False, None
 
 class FaceRecognizer:
     def __init__(self):
@@ -512,21 +583,70 @@ class FaceRecognizer:
         debug_log("Initializing camera for face verification", "CAMERA")
         debug_log(f"Using camera device: {CAMERA_DEVICE}", "DEBUG")
         
-        # Buka webcam dengan backend yang sesuai untuk OS
-        if IS_WINDOWS:
-            debug_log("Using DirectShow backend", "DEBUG")
-            cap = cv2.VideoCapture(CAMERA_DEVICE, cv2.CAP_DSHOW) if isinstance(CAMERA_DEVICE, int) else cv2.VideoCapture(CAMERA_DEVICE)
-        elif IS_LINUX:
-            debug_log("Using V4L2 backend", "DEBUG")
-            cap = cv2.VideoCapture(CAMERA_DEVICE, cv2.CAP_V4L2) if isinstance(CAMERA_DEVICE, int) else cv2.VideoCapture(CAMERA_DEVICE, cv2.CAP_V4L2)
-        else:
-            debug_log("Using default backend", "DEBUG")
-            cap = cv2.VideoCapture(CAMERA_DEVICE)
+        # Release any lingering camera resources
+        cv2.destroyAllWindows()
+        print("\n⏳ Releasing previous camera resources...")
+        time.sleep(0.3)  # Delay to ensure resources are released
         
-        if not cap.isOpened():
-            print("❌ Cannot open webcam!")
-            if IS_LINUX:
-                print("   On Linux, ensure user is in 'video' group: sudo usermod -a -G video $USER")
+        # Additional delay for Raspberry Pi
+        if IS_RASPBERRY_PI:
+            print("🍓 Raspberry Pi detected - waiting for camera to be ready...")
+            time.sleep(1.0)  # Extra delay for Pi
+        
+        # Determine backend
+        backend = None
+        backend_name = "default"
+        if IS_WINDOWS:
+            backend = cv2.CAP_DSHOW
+            backend_name = "DirectShow"
+        elif IS_LINUX:
+            backend = cv2.CAP_V4L2
+            backend_name = "V4L2"
+        
+        # Buka webcam dengan backend yang sesuai untuk OS - with retry logic
+        max_retries = 3
+        cap = None
+        camera_ready = False
+        
+        for retry in range(max_retries):
+            print(f"\n🔄 Attempt {retry + 1}/{max_retries} - Testing camera readiness...")
+            
+            try:
+                # Test camera readiness with frame capture test
+                camera_ready, cap = test_camera_readiness(
+                    CAMERA_DEVICE, 
+                    backend,
+                    max_test_frames=5
+                )
+                
+                if camera_ready and cap and cap.isOpened():
+                    print(f"\n✅ Camera is READY on attempt {retry + 1}!")
+                    break
+                else:
+                    if retry < max_retries - 1:
+                        print(f"\n⚠️ Camera not ready, waiting and retrying...")
+                        if cap:
+                            cap.release()
+                        time.sleep(1.5)  # Wait before retry
+                    else:
+                        print(f"\n❌ Cannot initialize camera after {max_retries} attempts!")
+                        if IS_LINUX:
+                            print("   💡 Tips for Linux/Raspberry Pi:")
+                            print("   1. Check camera connection: vcgencmd get_camera")
+                            print("   2. Add user to video group: sudo usermod -a -G video $USER")
+                            print("   3. Check if camera is in use: sudo fuser /dev/video0")
+                            print("   4. Reboot if needed: sudo reboot")
+                        return "CANCELLED"
+            except Exception as e:
+                print(f"❌ Camera initialization error: {e}")
+                if retry < max_retries - 1:
+                    print("⏳ Waiting before retry...")
+                    time.sleep(1.5)
+                else:
+                    return "CANCELLED"
+        
+        if not camera_ready or not cap or not cap.isOpened():
+            print("\n❌ Cannot open webcam!")
             return "CANCELLED"
         
         # Optimasi webcam settings berdasarkan performance mode
