@@ -10,6 +10,11 @@ import platform
 from face_recog_mod import FaceRecognizer
 from database import Database
 
+# Fix Qt platform plugin warnings for Raspberry Pi
+if platform.system() == 'Linux':
+    os.environ['QT_QPA_PLATFORM'] = 'xcb'  # Use X11 instead of Wayland
+    os.environ['QT_LOGGING_RULES'] = '*.debug=false;qt.qpa.*=false'  # Suppress Qt warnings
+
 # Deteksi sistem operasi
 IS_WINDOWS = platform.system() == 'Windows'
 IS_LINUX = platform.system() == 'Linux'
@@ -565,6 +570,11 @@ def detect_license_plates_realtime(model, confidence=0.5):
     # Tutup webcam SEBELUM face recognition
     cap.release()
     cv2.destroyAllWindows()
+    
+    # Extra delay for Raspberry Pi to ensure camera is fully released
+    if IS_RASPBERRY_PI:
+        time.sleep(0.5)
+    
     print("📷 Webcam closed.")
     
     # Proses OCR dari gambar yang sudah di-capture
@@ -755,8 +765,13 @@ if __name__ == "__main__":
                 rasp_controller.display_status("VERIFY FACE", owner_name[:16])
             
             # Delay sebentar sebelum memulai face recognition
+            # IMPORTANT: Longer delay on Raspberry Pi to ensure camera is fully released
             print("\n⏳ Preparing face recognition...")
-            time.sleep(1)
+            if IS_RASPBERRY_PI:
+                print("   🕒 Waiting for camera to be ready (Raspberry Pi)...")
+                time.sleep(2.5)  # Longer delay for Raspberry Pi
+            else:
+                time.sleep(1.5)
             
             # Face verification dengan max 2 attempts (OTOMATIS)
             attempt = 0
