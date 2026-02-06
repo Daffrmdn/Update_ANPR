@@ -213,6 +213,20 @@ def load_model(model_path):
     model = YOLO(model_path)
     return model
 
+def log_model_info(model, model_path):
+    """Print basic model info to confirm it loaded correctly."""
+    try:
+        print(f"✅ Model loaded: {model_path}")
+        model_name = model.__class__.__name__
+        print(f"   Model class: {model_name}")
+        if hasattr(model, "names") and model.names:
+            names_preview = list(model.names.values())[:5]
+            print(f"   Classes: {len(model.names)} (preview: {names_preview})")
+        else:
+            print("   Classes: (not available)")
+    except Exception as e:
+        print(f"⚠️ Model info check failed: {e}")
+
 def preprocess_plate(plate_img):
     """
     Preprocessing dengan optimasi berdasarkan performance mode
@@ -697,6 +711,7 @@ if __name__ == "__main__":
         print("\n🔄 Loading YOLO model...")
         model = load_model(MODEL_PATH)
         debug_log(f"Model loaded from {MODEL_PATH}", "SUCCESS")
+        log_model_info(model, MODEL_PATH)
         
         print("\n" + "=" * 50)
         print("  LICENSE PLATE & FACE RECOGNITION SYSTEM")
