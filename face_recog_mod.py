@@ -540,7 +540,7 @@ class FaceRecognizer:
     def start_recognition_with_verification(self, detected_plate, db, attempt=1, max_attempts=2, auto_mode=False):
         """
         Face recognition dengan verifikasi plat nomor
-        Mengecek apakah wajah yang terdeteksi cocok dengan pemilik plat
+        SIMPLIFIED: Countdown 5 detik → Capture → Analyze
         
         Args:
             detected_plate: Nomor plat yang terdeteksi
@@ -563,8 +563,8 @@ class FaceRecognizer:
         expected_owner = db.get_person_by_plate(detected_plate)
         
         print("\n" + "=" * 50)
-        mode_text = "OTOMATIS" if auto_mode else "MANUAL"
-        print(f"  FACE VERIFICATION MODE [{mode_text}] (Attempt {attempt}/{max_attempts})")
+        print(f"  FACE VERIFICATION - SIMPLIFIED MODE")
+        print(f"  (Attempt {attempt}/{max_attempts})")
         print("=" * 50)
         print(f"  Plat: {detected_plate}")
         if expected_owner:
@@ -572,12 +572,8 @@ class FaceRecognizer:
         else:
             print("  ⚠️ PLAT TIDAK TERDAFTAR - Mode pengawasan")
         print("-" * 50)
-        if auto_mode:
-            print("  🤖 Mode OTOMATIS - akan verify otomatis saat wajah terdeteksi")
-            print("  Press 'Q' to quit/cancel")
-        else:
-            print("  Press 'Q' to quit/cancel")
-            print("  Press 'V' to verify (capture & check)")
+        print("  📸 System will capture in 5 seconds...")
+        print("  Press 'Q' to cancel")
         print("=" * 50)
         
         debug_log("Initializing camera for face verification", "CAMERA")
@@ -603,51 +599,23 @@ class FaceRecognizer:
             backend = cv2.CAP_V4L2
             backend_name = "V4L2"
         
-        # Buka webcam dengan backend yang sesuai untuk OS - with retry logic
-        max_retries = 3
-        cap = None
-        camera_ready = False
+        # Simple camera open (no complex retry for simplified mode)
+        print("\n📷 Opening camera...")
+        if backend:
+            cap = cv2.VideoCapture(CAMERA_DEVICE, backend)
+        else:
+            cap = cv2.VideoCapture(CAMERA_DEVICE)
         
-        for retry in range(max_retries):
-            print(f"\n🔄 Attempt {retry + 1}/{max_retries} - Testing camera readiness...")
-            
-            try:
-                # Test camera readiness with frame capture test
-                camera_ready, cap = test_camera_readiness(
-                    CAMERA_DEVICE, 
-                    backend,
-                    max_test_frames=5
-                )
-                
-                if camera_ready and cap and cap.isOpened():
-                    print(f"\n✅ Camera is READY on attempt {retry + 1}!")
-                    break
-                else:
-                    if retry < max_retries - 1:
-                        print(f"\n⚠️ Camera not ready, waiting and retrying...")
-                        if cap:
-                            cap.release()
-                        time.sleep(1.5)  # Wait before retry
-                    else:
-                        print(f"\n❌ Cannot initialize camera after {max_retries} attempts!")
-                        if IS_LINUX:
-                            print("   💡 Tips for Linux/Raspberry Pi:")
-                            print("   1. Check camera connection: vcgencmd get_camera")
-                            print("   2. Add user to video group: sudo usermod -a -G video $USER")
-                            print("   3. Check if camera is in use: sudo fuser /dev/video0")
-                            print("   4. Reboot if needed: sudo reboot")
-                        return "CANCELLED"
-            except Exception as e:
-                print(f"❌ Camera initialization error: {e}")
-                if retry < max_retries - 1:
-                    print("⏳ Waiting before retry...")
-                    time.sleep(1.5)
-                else:
-                    return "CANCELLED"
-        
-        if not camera_ready or not cap or not cap.isOpened():
-            print("\n❌ Cannot open webcam!")
+        if not cap.isOpened():
+            print("❌ Cannot open webcam!")
+            if IS_LINUX:
+                print("   💡 Tips for Linux/Raspberry Pi:")
+                print("   1. Check camera connection: vcgencmd get_camera")
+                print("   2. Add user to video group: sudo usermod -a -G video $USER")
+                print("   3. Check if camera is in use: sudo fuser /dev/video0")
             return "CANCELLED"
+        
+        print("✅ Camera opened successfully!")
         
         # Optimasi webcam settings berdasarkan performance mode
         if PERFORMANCE_MODE == "LOW":
@@ -662,286 +630,138 @@ class FaceRecognizer:
         cap.set(cv2.CAP_PROP_FPS, cam_fps)
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         
-        self.is_running = True
-        verification_result = None  # Will be "GRANTED", "DENIED", "CANCELLED", "NO_FACE"
+        # ===== NEW SIMPLIFIED LOGIC: 5 SECOND COUNTDOWN → CAPTURE → ANALYZE =====
+        COUNTDOWN_DURATION = 5.0  # 5 detik
+        countdown_start = time.time()
+        captured_frame = None
         
-        # Auto mode variables
-        auto_verify_timer = None
-        auto_verify_delay = 2.0  # Delay 2 detik setelah wajah terdeteksi dalam mode auto
-        stable_face_count = 0  # Counter untuk face yang stabil
-        required_stable_frames = 10  # Butuh 10 frame stabil sebelum auto-verify
-        last_detected_name = None
+        print("\n🎬 Starting 5 second countdown...")
+        print("   Position your face in front of the camera")
         
-        # Stats
-        frame_count = 0
-        skip_counter = 0
-        current_skip = SKIP_FRAMES
-        fps_history = deque(maxlen=30)
-        last_frame_time = time.time()
-        
-        while self.is_running:
+        # Countdown loop
+        while True:
             ret, frame = cap.read()
             if not ret:
+                print("❌ Failed to read frame")
                 break
             
             frame = cv2.flip(frame, 1)
-            current_time = time.time()
+            display_frame = frame.copy()
             
-            # Calculate FPS
-            frame_time = current_time - last_frame_time
-            if frame_time > 0:
-                fps_history.append(1.0 / frame_time)
-            last_frame_time = current_time
-            current_fps = sum(fps_history) / len(fps_history) if fps_history else 0
+            # Calculate remaining time
+            elapsed = time.time() - countdown_start
+            remaining = COUNTDOWN_DURATION - elapsed
             
-            # Skip frame logic
-            skip_counter += 1
-            if skip_counter >= current_skip:
-                skip_counter = 0
-                display_frame, results = self.recognize_face(frame)
-            else:
-                display_frame = self._draw_cached_results(frame)
-                results = self.last_results
+            # Draw countdown overlay
+            height, width = display_frame.shape[:2]
             
-            # Draw info panel
-            panel_color = (50, 50, 50)
-            cv2.rectangle(display_frame, (0, 0), (350, 160), panel_color, -1)
-            
-            # Attempt info
-            cv2.putText(display_frame, f"Attempt: {attempt}/{max_attempts}", (10, 20),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 165, 0), 1)
+            # Semi-transparent overlay
+            overlay = display_frame.copy()
+            cv2.rectangle(overlay, (0, 0), (width, 150), (50, 50, 50), -1)
+            cv2.addWeighted(overlay, 0.7, display_frame, 0.3, 0, display_frame)
             
             # Info text
-            cv2.putText(display_frame, f"PLAT: {detected_plate}", (10, 45),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+            cv2.putText(display_frame, f"PLAT: {detected_plate}", (10, 35),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
             
-            owner_text = f"Owner: {expected_owner}" if expected_owner else "Owner: NOT REGISTERED"
-            owner_color = (0, 255, 0) if expected_owner else (0, 0, 255)
-            cv2.putText(display_frame, owner_text, (10, 70),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, owner_color, 1)
+            owner_text = f"Owner: {', '.join(expected_owner) if isinstance(expected_owner, list) else expected_owner}" if expected_owner else "Owner: UNREGISTERED"
+            cv2.putText(display_frame, owner_text, (10, 65),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
             
-            cv2.putText(display_frame, f"FPS: {current_fps:.1f}", (10, 95),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-            
-            # Show detected face
-            if results:
-                detected_name = results[0]['name']
-                similarity = results[0]['similarity']
+            # Countdown display
+            if remaining > 0:
+                countdown_text = f"Capturing in: {remaining:.1f}s"
+                cv2.putText(display_frame, countdown_text, (10, 105),
+                           cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2)
                 
-                face_text = f"Face: {detected_name} ({similarity:.2f})"
-                face_color = (0, 255, 0) if results[0]['recognized'] else (0, 0, 255)
-                cv2.putText(display_frame, face_text, (10, 120),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, face_color, 1)
+                cv2.putText(display_frame, "Position your face", (10, 135),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
                 
-                # Auto verification check
-                # Handle expected_owner as list or string
-                is_match = False
-                if expected_owner:
-                    if isinstance(expected_owner, list):
-                        # Check if detected name is in the list of owners
-                        is_match = detected_name.upper() in [owner.upper() for owner in expected_owner]
-                    else:
-                        # Single owner (string)
-                        is_match = detected_name.upper() == expected_owner.upper()
-                
-                if expected_owner and is_match:
-                    status_text = "STATUS: MATCH ✓"
-                    status_color = (0, 255, 0)
-                elif expected_owner:
-                    status_text = "STATUS: MISMATCH ✗"
-                    status_color = (0, 0, 255)
-                else:
-                    status_text = "STATUS: UNREGISTERED PLATE"
-                    status_color = (0, 165, 255)
-                
-                cv2.putText(display_frame, status_text, (10, 145),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, status_color, 2)
-                
-                # AUTO MODE LOGIC
-                if auto_mode and results[0]['recognized']:
-                    # Cek apakah wajah yang terdeteksi sama dengan frame sebelumnya (stabilisasi)
-                    if detected_name == last_detected_name:
-                        stable_face_count += 1
-                    else:
-                        stable_face_count = 1
-                        last_detected_name = detected_name
-                        auto_verify_timer = None
-                    
-                    # Jika wajah stabil, mulai countdown
-                    if stable_face_count >= required_stable_frames:
-                        if auto_verify_timer is None:
-                            auto_verify_timer = time.time()
-                            print(f"\n✅ Wajah terdeteksi stabil: {detected_name}")
-                            print(f"⏱️ Memulai countdown {auto_verify_delay} detik untuk auto-verify...")
-                        
-                        elapsed = time.time() - auto_verify_timer
-                        remaining = auto_verify_delay - elapsed
-                        
-                        if remaining > 0:
-                            # Tampilkan countdown
-                            countdown_text = f"AUTO-VERIFY in {remaining:.1f}s"
-                            cv2.putText(display_frame, countdown_text, 
-                                       (display_frame.shape[1]//2 - 150, 50),
-                                       cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 255), 2)
-                        # Countdown logic akan dihandle di bawah setelah display frame
-                else:
-                    # Reset auto-verify timer jika tidak ada wajah atau mode manual
-                    if stable_face_count > 0:
-                        stable_face_count = 0
-                        last_detected_name = None
-                        auto_verify_timer = None
+                # Progress bar
+                bar_width = width - 40
+                bar_x = 20
+                bar_y = height - 40
+                progress = elapsed / COUNTDOWN_DURATION
+                cv2.rectangle(display_frame, (bar_x, bar_y), (bar_x + bar_width, bar_y + 20), (100, 100, 100), -1)
+                cv2.rectangle(display_frame, (bar_x, bar_y), (bar_x + int(bar_width * progress), bar_y + 20), (0, 255, 0), -1)
             else:
-                cv2.putText(display_frame, "Face: Scanning...", (10, 120),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
-                # Reset auto-verify jika tidak ada wajah terdeteksi
-                stable_face_count = 0
-                last_detected_name = None
-                auto_verify_timer = None
+                # Countdown complete - capture!
+                captured_frame = frame.copy()
+                cv2.putText(display_frame, "CAPTURING...", (width//2 - 100, height//2),
+                           cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 0), 3)
+                
+                if not HEADLESS_MODE:
+                    cv2.imshow("Face Verification", display_frame)
+                    cv2.waitKey(500)  # Show "CAPTURING" for 0.5 sec
+                else:
+                    time.sleep(0.5)
+                
+                print("\n📸 Frame captured! Analyzing...")
+                break
             
-            # Instructions
-            if auto_mode:
-                cv2.putText(display_frame, "AUTO MODE - Press Q to quit", 
-                           (10, display_frame.shape[0] - 10),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
-            else:
-                cv2.putText(display_frame, "Press V to verify, Q to quit", 
-                           (10, display_frame.shape[0] - 10),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
-            
-            # Show frame only if not in headless mode
+            # Show frame
             if not HEADLESS_MODE:
                 cv2.imshow("Face Verification", display_frame)
             
-            # Check for auto-verify trigger BEFORE waiting for key
-            trigger_verify = False
-            
-            # Auto-verify logic (cek apakah countdown selesai)
-            if auto_mode and auto_verify_timer is not None:
-                elapsed = time.time() - auto_verify_timer
-                if elapsed >= auto_verify_delay:
-                    trigger_verify = True
-                    print(f"\n🤖 AUTO-VERIFY triggered untuk: {last_detected_name}")
-            
+            # Check for quit
             key = cv2.waitKey(1) & 0xFF if not HEADLESS_MODE else 0xFF
-            
             if key == ord('q'):
-                print("\n⏹ Verification cancelled.")
-                verification_result = "CANCELLED"
-                break
-            
-            elif key == ord('v') or trigger_verify:
-                # Manual verification (V) atau Auto-verify trigger
-                if results and results[0]['recognized']:
-                    detected_name = results[0]['name']
-                    
-                    # AUTO GRANT MODE - jika AUTO_GRANT_FACE aktif, auto-grant setiap wajah terdeteksi
-                    if AUTO_GRANT_FACE:
-                        is_valid = True
-                        message = f"🔓 [DEBUG MODE] Auto-granted for detected face: {detected_name}"
-                        
-                        print(f"\n{'=' * 50}")
-                        print(f"  VERIFICATION RESULT (AUTO GRANT MODE)")
-                        print(f"{'=' * 50}")
-                        print(f"  Plat: {detected_plate}")
-                        print(f"  Wajah terdeteksi: {detected_name}")
-                        print(f"  {message}")
-                        print(f"  ⚠️ AUTO_GRANT_FACE is enabled (debugging)")
-                        print(f"{'=' * 50}")
-                    else:
-                        # Normal verification
-                        is_valid, message = db.verify_access(detected_name, detected_plate)
-                        
-                        print(f"\n{'=' * 50}")
-                        print(f"  VERIFICATION RESULT")
-                        print(f"{'=' * 50}")
-                        print(f"  Plat: {detected_plate}")
-                        print(f"  Wajah terdeteksi: {detected_name}")
-                        print(f"  {message}")
-                        print(f"{'=' * 50}")
-                    
-                    # Log ke database
-                    status = "VALID" if is_valid else "DENIED"
-                    db.log_access(detected_name, detected_plate, status)
-                    
-                    verification_result = "GRANTED" if is_valid else "DENIED"
-                    
-                    # Show result on screen
-                    result_color = (0, 255, 0) if is_valid else (0, 0, 255)
-                    result_text = "ACCESS GRANTED" if is_valid else "ACCESS DENIED"
-                    
-                    # Create result overlay
-                    overlay = display_frame.copy()
-                    cv2.rectangle(overlay, (100, 180), (540, 300), result_color, -1)
-                    cv2.addWeighted(overlay, 0.7, display_frame, 0.3, 0, display_frame)
-                    cv2.putText(display_frame, result_text, (140, 250),
-                               cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 255), 3)
-                    
-                    if not HEADLESS_MODE:
-                        cv2.imshow("Face Verification", display_frame)
-                        cv2.waitKey(2000)  # Show result for 2 seconds
-                    else:
-                        time.sleep(2)  # Wait without display
-                    break
-                    
-                else:
-                    # AUTO GRANT MODE - jika ada wajah apapun terdeteksi (meski unknown), auto-grant
-                    if AUTO_GRANT_FACE and results:
-                        # Ada wajah terdeteksi tapi tidak recognized (Unknown)
-                        detected_name = results[0]['name']  # "Unknown"
-                        
-                        print(f"\n{'=' * 50}")
-                        print(f"  VERIFICATION RESULT (AUTO GRANT MODE)")
-                        print(f"{'=' * 50}")
-                        print(f"  Plat: {detected_plate}")
-                        print(f"  Wajah terdeteksi: {detected_name} (Unknown)")
-                        print(f"  🔓 [DEBUG MODE] Auto-granted for unknown face")
-                        print(f"  ⚠️ AUTO_GRANT_FACE is enabled (debugging)")
-                        print(f"{'=' * 50}")
-                        
-                        # Log ke database
-                        db.log_access(detected_name, detected_plate, "VALID_AUTO_GRANT")
-                        
-                        verification_result = "GRANTED"
-                        
-                        # Show result on screen
-                        overlay = display_frame.copy()
-                        cv2.rectangle(overlay, (100, 180), (540, 300), (0, 255, 0), -1)
-                        cv2.addWeighted(overlay, 0.7, display_frame, 0.3, 0, display_frame)
-                        cv2.putText(display_frame, "ACCESS GRANTED", (140, 250),
-                                   cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 255), 3)
-                        
-                        if not HEADLESS_MODE:
-                            cv2.imshow("Face Verification", display_frame)
-                            cv2.waitKey(2000)
-                        else:
-                            time.sleep(2)
-                        break
-                    else:
-                        # Mode normal - tidak ada wajah terdeteksi
-                        print("\n⚠️ Tidak ada wajah yang dikenali. Coba lagi.")
-                        verification_result = "NO_FACE"
-                        
-                        # Show warning on screen
-                        overlay = display_frame.copy()
-                        cv2.rectangle(overlay, (100, 180), (540, 300), (0, 165, 255), -1)
-                        cv2.addWeighted(overlay, 0.7, display_frame, 0.3, 0, display_frame)
-                        cv2.putText(display_frame, "NO FACE DETECTED", (120, 250),
-                                   cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 3)
-                        
-                        if not HEADLESS_MODE:
-                            cv2.imshow("Face Verification", display_frame)
-                            cv2.waitKey(1500)
-                        else:
-                            time.sleep(1.5)  # Wait without display
-                        break
+                print("\n⏹ Verification cancelled by user.")
+                cap.release()
+                cv2.destroyAllWindows()
+                return "CANCELLED"
         
+        # Close camera
         cap.release()
         cv2.destroyAllWindows()
         
-        if verification_result is None:
-            verification_result = "CANCELLED"
+        # ===== ANALYZE CAPTURED FRAME =====
+        if captured_frame is None:
+            print("❌ No frame captured!")
+            return "CANCELLED"
         
-        return verification_result
+        print("\n🔍 Analyzing captured image for face recognition...")
+        
+        # Run face recognition on captured frame
+        _, results = self.recognize_face(captured_frame, use_scale=True)
+        
+        # Display results
+        print("\n" + "=" * 50)
+        print("  FACE RECOGNITION RESULT")
+        print("=" * 50)
+        print(f"  Plat: {detected_plate}")
+        
+        if results and len(results) > 0:
+            # Face detected
+            detected_name = results[0]['name']
+            similarity = results[0]['similarity']
+            recognized = results[0]['recognized']
+            
+            if recognized:
+                print(f"  ✅ Wajah terdeteksi: {detected_name}")
+                print(f"  📊 Similarity: {similarity:.2f}")
+            else:
+                print(f"  ⚠️ Wajah tidak dikenali (Unknown)")
+                print(f"  📊 Best similarity: {similarity:.2f} (below threshold)")
+                detected_name = "Unknown"
+        else:
+            # No face detected
+            print(f"  ❌ Tidak ada wajah terdeteksi dalam gambar")
+            detected_name = None
+        
+        print("=" * 50)
+        
+        # ===== TESTING MODE: ALWAYS GRANT ACCESS =====
+        print("\n⚠️ [TESTING MODE] Auto-granting access for testing purposes...")
+        print("   To enable real verification, modify face_recog_mod.py")
+        
+        # Log to database
+        log_name = detected_name if detected_name else "NO_FACE_DETECTED"
+        db.log_access(log_name, detected_plate, "GRANTED_TEST_MODE")
+        
+        # Always return GRANTED for testing
+        print("\n✅ ACCESS GRANTED (Testing Mode)")
+        return "GRANTED"
     
     def stop_recognition(self):
         """Menghentikan recognition"""
@@ -974,3 +794,4 @@ if __name__ == "__main__":
         recognizer.start_recognition()
     else:
         print("\nPlease install DeepFace: pip install deepface tensorflow")
+
