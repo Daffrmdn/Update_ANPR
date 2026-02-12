@@ -35,7 +35,8 @@ CAMERA_DEVICE = "/dev/video0" if IS_LINUX else 0  # Auto-select based on OS
 # Debug mode
 DEBUG_MODE = False  # Set False untuk production
 HEADLESS_MODE = os.environ.get('DISPLAY') is None if IS_LINUX else False
-AUTO_GRANT_FACE = True  # Set True untuk auto-grant ketika wajah terdeteksi (debugging)
+AUTO_GRANT_FACE = False  # Set False untuk production (enable real face verification)
+TESTING_MODE = False  # Set True untuk bypass face verification (testing only)
 
 # ============ OPTIMASI FPS ============
 # Performance mode untuk Raspberry Pi
@@ -50,13 +51,13 @@ PERFORMANCE_MODE = "LOW" if IS_RASPBERRY_PI else "BALANCED"
 # Gunakan model lebih ringan di Raspberry Pi untuk performa
 if PERFORMANCE_MODE == "LOW":
     MODEL_NAME = "Facenet"  # Lebih cepat untuk Raspberry Pi
-    DETECTOR_BACKEND = "opencv"  # Tercepat
-    PROCESS_SCALE = 0.5
+    DETECTOR_BACKEND = "ssd"  # Lebih akurat dari opencv (worth the trade-off)
+    PROCESS_SCALE = 0.75  # Naikkan dari 0.5 ke 0.75 untuk better detection
     SKIP_FRAMES = 3
 elif PERFORMANCE_MODE == "BALANCED":
     MODEL_NAME = "Facenet512"
     DETECTOR_BACKEND = "ssd"
-    PROCESS_SCALE = 0.75
+    PROCESS_SCALE = 0.85  # Sedikit naikkan
     SKIP_FRAMES = 2
 else:  # HIGH
     MODEL_NAME = "Facenet512"
@@ -65,12 +66,17 @@ else:  # HIGH
     SKIP_FRAMES = 1
 
 # Detector backend (dari tercepat ke paling akurat):
-# - "opencv" : Tercepat
-# - "ssd" : Cepat, akurasi bagus
+# - "opencv" : Tercepat (kurang akurat)
+# - "ssd" : Cepat, akurasi bagus (RECOMMENDED)
 # - "mtcnn" : Akurat tapi lambat
 # - "retinaface" : Paling akurat tapi paling lambat
 
 THRESHOLD = 0.50  # Threshold similarity (0.50 = balance, naikkan untuk lebih ketat)
+EDGE_CONFIDENCE_THRESHOLD = 0.4  # Lower threshold untuk edge cases
+
+# Image enhancement untuk better face detection
+ENHANCE_BRIGHTNESS = True  # Auto-enhance brightness untuk foto gelap
+ENHANCE_CONTRAST = True    # CLAHE contrast enhancement
 RECOGNITION_LOG = "recognition_log"
 
 # ===== DEBUG FUNCTION =====
@@ -261,6 +267,43 @@ class FaceRecognizer:
         
         return best_match, best_similarity
     
+    def _enhance_image(self, image):
+        """Enhance image untuk face detection yang lebih baik"""
+        enhanced = image.copy()
+        
+        # Brightness enhancement jika terlalu gelap
+        if ENHANCE_BRIGHTNESS:
+            gray = cv2.cvtColor(enhanced, cv2.COLOR_BGR2GRAY)
+            avg_brightness = np.mean(gray)
+            
+            if avg_brightness < 100:  # Terlalu gelap
+                # Brightness adjustment
+                hsv = cv2.cvtColor(enhanced, cv2.COLOR_BGR2HSV)
+                h, s, v = cv2.split(hsv)
+                
+                # Increase brightness
+                value = int((100 - avg_brightness) * 0.6)  # 60% dari deficit
+                v = cv2.add(v, value)
+                
+                hsv = cv2.merge([h, s, v])
+                enhanced = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
+                debug_log(f"Brightness enhanced: {avg_brightness:.0f} -> ~{avg_brightness + value:.0f}", "PROCESS")
+        
+        # Contrast enhancement
+        if ENHANCE_CONTRAST:
+            lab = cv2.cvtColor(enhanced, cv2.COLOR_BGR2LAB)
+            l, a, b = cv2.split(lab)
+            
+            # CLAHE
+            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+            l = clahe.apply(l)
+            
+            lab = cv2.merge([l, a, b])
+            enhanced = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+            debug_log("Contrast enhanced with CLAHE", "PROCESS")
+        
+        return enhanced
+    
     def recognize_face(self, frame, use_scale=True):
         """Mengenali wajah dalam frame (OPTIMIZED)"""
         if not self.deepface_available:
@@ -269,13 +312,16 @@ class FaceRecognizer:
         results = []
         display_frame = frame.copy()
         
+        # Enhance image sebelum processing
+        enhanced_frame = self._enhance_image(frame)
+        
         # Resize frame untuk proses lebih cepat
         if use_scale and PROCESS_SCALE < 1.0:
-            h, w = frame.shape[:2]
-            small_frame = cv2.resize(frame, (int(w * PROCESS_SCALE), int(h * PROCESS_SCALE)))
+            h, w = enhanced_frame.shape[:2]
+            small_frame = cv2.resize(enhanced_frame, (int(w * PROCESS_SCALE), int(h * PROCESS_SCALE)))
             scale_factor = 1.0 / PROCESS_SCALE
         else:
-            small_frame = frame
+            small_frame = enhanced_frame
             scale_factor = 1.0
         
         try:
@@ -668,14 +714,28 @@ class FaceRecognizer:
             cv2.putText(display_frame, owner_text, (10, 65),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
             
+            # Quick face detection preview (non-blocking)
+            try:
+                faces_preview = self.DeepFace.extract_faces(
+                    img_path=frame,
+                    detector_backend=DETECTOR_BACKEND,
+                    enforce_detection=False
+                )
+                face_count = len(faces_preview) if faces_preview else 0
+            except:
+                face_count = 0
+            
             # Countdown display
             if remaining > 0:
                 countdown_text = f"Capturing in: {remaining:.1f}s"
                 cv2.putText(display_frame, countdown_text, (10, 105),
                            cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2)
                 
-                cv2.putText(display_frame, "Position your face", (10, 135),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+                # Show face detection status
+                face_status = f"Face detected: {face_count}" if face_count > 0 else "No face detected yet"
+                face_color = (0, 255, 0) if face_count > 0 else (0, 165, 255)
+                cv2.putText(display_frame, face_status, (10, 135),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, face_color, 1)
                 
                 # Progress bar
                 bar_width = width - 40
@@ -751,17 +811,56 @@ class FaceRecognizer:
         
         print("=" * 50)
         
-        # ===== TESTING MODE: ALWAYS GRANT ACCESS =====
-        print("\n⚠️ [TESTING MODE] Auto-granting access for testing purposes...")
-        print("   To enable real verification, modify face_recog_mod.py")
+        # ===== VERIFICATION LOGIC =====
+        if TESTING_MODE:
+            # TESTING MODE: Always grant
+            print("\n⚠️ [TESTING MODE] Auto-granting access for testing purposes...")
+            print("   To enable real verification, set TESTING_MODE = False")
+            
+            log_name = detected_name if detected_name else "NO_FACE_DETECTED"
+            db.log_access(log_name, detected_plate, "GRANTED_TEST_MODE")
+            
+            print("\n✅ ACCESS GRANTED (Testing Mode)")
+            return "GRANTED"
         
-        # Log to database
-        log_name = detected_name if detected_name else "NO_FACE_DETECTED"
-        db.log_access(log_name, detected_plate, "GRANTED_TEST_MODE")
+        # PRODUCTION MODE: Real verification
+        if not detected_name:
+            # No face detected
+            print("\n❌ ACCESS DENIED - No face detected")
+            db.log_access("NO_FACE", detected_plate, "DENIED_NO_FACE")
+            return "NO_FACE"
         
-        # Always return GRANTED for testing
-        print("\n✅ ACCESS GRANTED (Testing Mode)")
-        return "GRANTED"
+        if detected_name == "Unknown":
+            # Face detected but not recognized
+            print("\n❌ ACCESS DENIED - Face not recognized")
+            db.log_access("UNKNOWN", detected_plate, "DENIED_UNKNOWN")
+            return "DENIED"
+        
+        # Face recognized - check against plate owner
+        if expected_owner:
+            # Normalize names untuk comparison
+            detected_lower = detected_name.lower()
+            expected_lower = [name.lower() for name in expected_owner] if isinstance(expected_owner, list) else [expected_owner.lower()]
+            
+            if detected_lower in expected_lower:
+                # MATCH: Wajah sesuai dengan pemilik plat
+                print(f"\n✅ ACCESS GRANTED - Face matches plate owner")
+                print(f"   Verified: {detected_name}")
+                db.log_access(detected_name, detected_plate, "GRANTED")
+                return "GRANTED"
+            else:
+                # MISMATCH: Wajah tidak sesuai dengan pemilik plat
+                print(f"\n❌ ACCESS DENIED - Face mismatch")
+                print(f"   Detected: {detected_name}")
+                print(f"   Expected: {', '.join(expected_owner)}")
+                db.log_access(detected_name, detected_plate, "DENIED_MISMATCH")
+                return "DENIED"
+        else:
+            # Plat tidak terdaftar, tapi wajah dikenali (surveillance mode)
+            print(f"\n⚠️ UNREGISTERED PLATE - Face recognized: {detected_name}")
+            print(f"   Allowing access (surveillance mode)")
+            db.log_access(detected_name, detected_plate, "GRANTED_UNREGISTERED")
+            return "GRANTED"
     
     def stop_recognition(self):
         """Menghentikan recognition"""
