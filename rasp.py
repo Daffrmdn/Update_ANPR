@@ -127,26 +127,43 @@ class RaspberryPiController:
     # ------------------------------------------------------------------
 
     def _poll_button(self):
-        """Thread polling button pin 23 setiap 50ms."""
+        """Thread polling button pin 23.
+        Konfirmasi pin LOW stabil 5x sample sebelum dianggap ditekan.
+        Setelah trigger, tunggu pin kembali HIGH sebelum bisa trigger lagi.
+        """
         print("   Button polling active (pin 23)...")
-        last_state = GPIO.HIGH
+        CONFIRM_SAMPLES = 5      # harus LOW stabil N kali berturut-turut
+        POLL_INTERVAL   = 0.02   # 20ms per sample
+        COOLDOWN_MS     = 1500   # 1.5 detik cooldown setelah trigger
+
         last_press_time = 0
+        button_was_pressed = False
 
         while self._button_polling_active:
             try:
-                current_state = GPIO.input(LOCAL_BUTTON_PIN)
                 current_time = time.time() * 1000  # ms
+                state = GPIO.input(LOCAL_BUTTON_PIN)
 
-                # Deteksi FALLING edge: HIGH -> LOW = button ditekan
-                if last_state == GPIO.HIGH and current_state == GPIO.LOW:
-                    if current_time - last_press_time > BUTTON_DEBOUNCE_MS:
+                if state == GPIO.LOW and not button_was_pressed:
+                    # Konfirmasi: baca N kali lagi, harus semua LOW
+                    confirmed = True
+                    for _ in range(CONFIRM_SAMPLES):
+                        time.sleep(POLL_INTERVAL)
+                        if GPIO.input(LOCAL_BUTTON_PIN) != GPIO.LOW:
+                            confirmed = False
+                            break
+
+                    if confirmed and (current_time - last_press_time > COOLDOWN_MS):
                         last_press_time = current_time
-                        print(f"\nLOCAL BUTTON PRESSED! (polled)")
-                        # Handle di thread baru agar polling tidak terhambat
+                        button_was_pressed = True
+                        print(f"\nLOCAL BUTTON PRESSED! (confirmed)")
                         Thread(target=self._handle_button_press, daemon=True).start()
 
-                last_state = current_state
-                time.sleep(0.05)  # poll setiap 50ms
+                elif state == GPIO.HIGH and button_was_pressed:
+                    # Button dilepas, reset agar bisa trigger lagi
+                    button_was_pressed = False
+
+                time.sleep(POLL_INTERVAL)
 
             except Exception as e:
                 print(f"Button polling error: {e}")
