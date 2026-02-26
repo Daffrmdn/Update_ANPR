@@ -69,8 +69,6 @@ class RaspberryPiController:
             # Stabilisasi pin
             time.sleep(0.5)
 
-            # Start polling thread untuk button
-            # Lebih reliable daripada GPIO.add_event_detect di Python 3.13
             self._button_polling_active = True
             self._button_thread = Thread(target=self._poll_button, daemon=True)
             self._button_thread.start()
@@ -127,30 +125,22 @@ class RaspberryPiController:
     # ------------------------------------------------------------------
 
     def _poll_button(self):
-        """Thread polling button pin 23.
-        Logika sederhana: deteksi LOW, aksi, lalu tunggu button dilepas (HIGH)
-        baru bisa trigger lagi. Debounce 300ms.
-        """
+        """Polling button pin 23. Deteksi LOW, jalankan aksi,
+        tunggu button dilepas (HIGH) sebelum bisa trigger lagi."""
         print("   Button polling active (pin 23)...")
-        last_press_time = 0
 
         while self._button_polling_active:
             try:
-                current_time = time.time() * 1000  # ms
-                state = GPIO.input(LOCAL_BUTTON_PIN)
-
-                # Button ditekan (LOW) dan debounce sudah lewat
-                if state == GPIO.LOW and (current_time - last_press_time > BUTTON_DEBOUNCE_MS):
-                    last_press_time = current_time
-                    print(f"\nLOCAL BUTTON PRESSED!")
-                    Thread(target=self._handle_button_press, daemon=True).start()
-
-                    # Tunggu button dilepas (HIGH) sebelum bisa trigger lagi
-                    while self._button_polling_active and GPIO.input(LOCAL_BUTTON_PIN) == GPIO.LOW:
-                        time.sleep(0.05)
-
+                if GPIO.input(LOCAL_BUTTON_PIN) == GPIO.LOW:
+                    # Debounce: tunggu 50ms konfirmasi
+                    time.sleep(0.05)
+                    if GPIO.input(LOCAL_BUTTON_PIN) == GPIO.LOW:
+                        print("\nLOCAL BUTTON PRESSED!")
+                        Thread(target=self._handle_button_press, daemon=True).start()
+                        # Tunggu button dilepas sebelum bisa trigger lagi
+                        while self._button_polling_active and GPIO.input(LOCAL_BUTTON_PIN) == GPIO.LOW:
+                            time.sleep(0.05)
                 time.sleep(0.05)
-
             except Exception as e:
                 print(f"Button polling error: {e}")
                 time.sleep(0.1)
@@ -158,26 +148,20 @@ class RaspberryPiController:
         print("   Button polling stopped.")
 
     def _handle_button_press(self):
-        """Handle aksi saat button ditekan.
-        Langsung gerak servo TANPA menunggu gate_lock
-        agar tidak terhambat main loop."""
+        """Handle aksi saat button ditekan. Langsung gerak servo tanpa lock."""
         if self.gate_is_open:
             print("   Closing gate via local button...")
-            # Stop IR monitoring
             self.monitoring_ir = False
-            # Langsung gerak servo tanpa lock
             self._set_servo_angle(SERVO_CLOSED_ANGLE)
             self.gate_is_open = False
             self.display_status("GATE CLOSED", "Via BUTTON")
             print("   Gate closed via button")
         else:
             print("   Opening gate via local button...")
-            # Langsung gerak servo tanpa lock
             self._set_servo_angle(SERVO_OPEN_ANGLE)
             self.gate_is_open = True
             self.display_status("GATE OPEN", "Via BUTTON")
             print("   Gate opened via button")
-            # Start IR monitoring
             self._start_ir_monitoring()
 
     # ------------------------------------------------------------------
