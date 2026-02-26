@@ -40,6 +40,7 @@ class RaspberryPiController:
         self.gate_is_open = False
         self.monitoring_ir = False
         self._button_polling_active = False
+        self._servo_moving = False
         self.gate_lock = Lock()
 
         try:
@@ -108,10 +109,13 @@ class RaspberryPiController:
 
     def _set_servo_angle(self, angle):
         """Set sudut servo. Kirim PWM lalu stop untuk cegah jitter."""
+        self._servo_moving = True  # flag: servo sedang bergerak
         duty_cycle = 2.5 + (angle / 18.0)
         self.servo_pwm.ChangeDutyCycle(duty_cycle)
         time.sleep(0.8)
         self.servo_pwm.ChangeDutyCycle(0)
+        time.sleep(0.5)  # tunggu noise hilang setelah servo berhenti
+        self._servo_moving = False  # flag: servo selesai
 
     def _move_servo_to_closed(self):
         """Gerak ke posisi tutup tanpa lock (untuk init)."""
@@ -125,19 +129,22 @@ class RaspberryPiController:
     # ------------------------------------------------------------------
 
     def _poll_button(self):
-        """Polling button pin 23. Deteksi LOW, jalankan aksi,
-        tunggu button dilepas (HIGH) sebelum bisa trigger lagi."""
+        """Polling button pin 23."""
         print("   Button polling active (pin 23)...")
 
         while self._button_polling_active:
             try:
+                # Skip jika servo sedang bergerak (mencegah interferensi)
+                if self._servo_moving:
+                    time.sleep(0.1)
+                    continue
+
                 if GPIO.input(LOCAL_BUTTON_PIN) == GPIO.LOW:
-                    # Debounce: tunggu 50ms konfirmasi
-                    time.sleep(0.05)
+                    time.sleep(0.05)  # debounce
                     if GPIO.input(LOCAL_BUTTON_PIN) == GPIO.LOW:
                         print("\nLOCAL BUTTON PRESSED!")
                         Thread(target=self._handle_button_press, daemon=True).start()
-                        # Tunggu button dilepas sebelum bisa trigger lagi
+                        # Tunggu button dilepas
                         while self._button_polling_active and GPIO.input(LOCAL_BUTTON_PIN) == GPIO.LOW:
                             time.sleep(0.05)
                 time.sleep(0.05)
