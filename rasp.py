@@ -66,6 +66,12 @@ class RaspberryPiController:
             # Stabilisasi pin sebelum pasang event detect
             time.sleep(0.5)
 
+            # Hapus event detect lama jika ada (mencegah konflik saat restart)
+            try:
+                GPIO.remove_event_detect(LOCAL_BUTTON_PIN)
+            except Exception:
+                pass
+
             # Gunakan event detect dengan callback yang spawn thread
             # agar tidak terjadi deadlock dengan gate_lock
             GPIO.add_event_detect(
@@ -127,7 +133,9 @@ class RaspberryPiController:
     # ------------------------------------------------------------------
 
     def _local_button_callback(self, channel):
-        """Dipanggil oleh GPIO event detect saat tombol ditekan."""
+        """Dipanggil oleh GPIO event detect saat tombol ditekan.
+        LANGSUNG gerak servo tanpa menunggu gate_lock agar tidak deadlock
+        dengan main loop yang sedang memegang lock."""
         # Debounce manual kecil
         time.sleep(0.05)
 
@@ -137,14 +145,22 @@ class RaspberryPiController:
 
         print("\n🔘 LOCAL BUTTON PRESSED!")
 
-        # Spawn thread terpisah agar tidak deadlock dengan gate_lock
         def _handle_button():
             if self.gate_is_open:
-                print("   ↓ Closing gate via local button...")
-                self.close_gate()
+                print("   ↓ Closing gate via local button (direct)...")
+                self._set_servo_angle(SERVO_CLOSED_ANGLE)
+                self.gate_is_open = False
+                self.monitoring_ir = False
+                self.display_status("GATE CLOSED", "Via BUTTON")
+                print("   ✅ Gate closed via button")
             else:
-                print("   ↑ Opening gate via local button...")
-                self.open_gate(source="BUTTON")
+                print("   ↑ Opening gate via local button (direct)...")
+                self._set_servo_angle(SERVO_OPEN_ANGLE)
+                self.gate_is_open = True
+                self.display_status("GATE OPEN", "Via BUTTON")
+                print("   ✅ Gate opened via button")
+                # Start IR monitoring setelah buka
+                self._start_ir_monitoring()
 
         t = Thread(target=_handle_button, daemon=True)
         t.start()
